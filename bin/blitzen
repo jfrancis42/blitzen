@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Runnable entry point -- works from any directory, no install required.
+
+    ~/Dropbox/build/blitzen/bin/blitzen protect
+
+Symlink it onto your PATH if you like; the symlink is resolved before the
+project root is located, so that works too.
+"""
+
+import os
+import sys
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from blitzen.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())

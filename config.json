@@ -1,0 +1,16 @@
+{
+  "lat": 39.49373180653013,
+  "lon": -104.75963833728404,
+  "radius_km": 25.0,
+  "interval_minutes": 3.0,
+  "poll_seconds": null,
+  "source_mask": 6,
+  "database": "blitzen.db",
+  "retain_days": 30.0,
+
+  "trigger_distance_miles": 10.0,
+  "all_clear_minutes": 30.0,
+  "stale_feed_seconds": 120.0,
+  "fail_safe_on_stale": true,
+  "use_uncertainty_margin": true
+}
