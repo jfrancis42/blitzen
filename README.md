@@ -52,6 +52,10 @@ bin/blitzen collect --live
 # What is the feed delivering right now? Writes nothing to the database.
 bin/blitzen probe --seconds 20
 
+# Signal alert on nearby lightning (needs BLITZEN_SIGNAL_* env, see CLAUDE.md)
+bin/blitzen alert
+bin/blitzen alert-test        # send one sample of each message
+
 # What has been stored
 bin/blitzen recent --minutes 120
 bin/blitzen recent --minutes 60 --json
@@ -138,6 +142,7 @@ circle rather than the point estimate. Turn it off with
 | `stale_feed_seconds` | treat the feed as blind after this long without data | 120 |
 | `fail_safe_on_stale` | hold power off while blind | `true` |
 | `use_uncertainty_margin` | trip on the near edge of the error circle | `true` |
+| `blind_alert_minutes` | `alert` only: announce a dead feed after this long | 10 |
 
 `trigger_distance_miles` must fit inside `radius_km` — strokes beyond the
 collection radius are discarded before the trigger ever sees them, so a trigger

@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import math
+import os
 import sys
 import time
 
@@ -75,6 +76,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--intervals", type=int, default=None,
         help="stop after this many status intervals (default: run forever)",
     )
+
+    p_alert = sub.add_parser(
+        "alert",
+        help="send a Signal message when lightning gets close, and on all-clear",
+    )
+    p_alert.add_argument(
+        "--place", default="home", help="what to call the site in messages (default: home)",
+    )
+    p_alert.add_argument(
+        "--intervals", type=int, default=None,
+        help="stop after this many status intervals (default: run forever)",
+    )
+
+    p_atest = sub.add_parser(
+        "alert-test",
+        help="send one sample of each alert message through the real Signal path",
+    )
+    p_atest.add_argument("--place", default="home")
 
     p_sim = sub.add_parser(
         "simulate",
@@ -244,6 +263,89 @@ def cmd_protect(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def cmd_alert(args: argparse.Namespace, config: Config) -> int:
+    from .notify import LightningAlerter, SignalSender
+
+    sender = SignalSender.from_env()
+    print(
+        f"blitzen alert\n"
+        f"  location        {config.lat:.6f}, {config.lon:.6f} ({args.place})\n"
+        f"  trigger         lightning within {config.trigger_distance_miles:g} mi "
+        f"({config.trigger_distance_km:.1f} km)"
+        f"{', near edge of error circle' if config.use_uncertainty_margin else ''}\n"
+        f"  all clear       {config.all_clear_minutes:g} min with no strike in radius\n"
+        f"  blind warning   after {config.blind_alert_minutes:g} min without data\n"
+        f"  signal          {sender.url} -> {', '.join(sender.recipients)}\n"
+        f"  database        {config.resolved_database()}",
+        flush=True,
+    )
+
+    with Store(config.resolved_database()) as store:
+        # The Equipment is only a log line here: the alerter watches STATE, not
+        # power, for the reason given at the top of notify.py.
+        controller = ProtectionController(
+            config, PrintEquipment(name="ALERT STATE"), store=store
+        )
+        controller.start()
+        alerter = LightningAlerter(controller, sender.send, place=args.place)
+
+        def on_report(report: IntervalReport) -> None:
+            print(report.summary(config.radius_km), flush=True)
+            print(controller.status_line(), flush=True)
+
+        collector = Collector(
+            config,
+            store=store,
+            on_report=on_report,
+            on_stroke=alerter.on_stroke,
+            on_tick=alerter.on_tick,
+        )
+        collector.install_signal_handlers()
+        collector.run(max_intervals=args.intervals)
+
+    sender.close()
+    print("\nstopped")
+    return 0
+
+
+def cmd_alert_test(args: argparse.Namespace, config: Config) -> int:
+    """Send each message type once, built by the real alerter code."""
+    import dataclasses
+
+    from .collector import NearbyStroke
+    from .notify import LightningAlerter, SignalSender
+
+    sender = SignalSender.from_env()
+    now = [time.time()]
+    controller = ProtectionController(
+        config, PrintEquipment(stream=open(os.devnull, "w")), store=None,
+        clock=lambda: now[0], announce=lambda _msg: None,
+    )
+    sent: list[str] = []
+    alerter = LightningAlerter(controller, sent.append, place=args.place)
+
+    controller.start()
+    alerter.on_tick(now[0], now[0])
+    strike = _fake_stroke(config, config.trigger_distance_miles * 0.6, now[0])
+    strike = NearbyStroke(dataclasses.replace(strike.stroke, dev_m=3000.0),
+                          strike.distance_km, 45.0)
+    alerter.on_stroke(strike)
+    now[0] += (config.all_clear_minutes + 0.1) * 60.0
+    alerter.on_tick(now[0], now[0])
+    last_good = now[0]
+    now[0] += (config.blind_alert_minutes + 1) * 60.0
+    alerter.on_tick(now[0], last_good)
+    now[0] += 60.0
+    alerter.on_tick(now[0], now[0])
+
+    header = "🧪 TEST from blitzen -- not a real alert. The messages that follow show what each alert looks like."
+    for text in [header, *sent]:
+        sender.send(text)
+    sender.close(timeout=120)
+    print(f"{sender.delivered} delivered, {sender.failed} failed")
+    return 0 if sender.delivered == len(sent) + 1 else 1
+
+
 def cmd_simulate(args: argparse.Namespace, config: Config) -> int:
     """Run the state machine offline against a scripted storm.
 
@@ -358,6 +460,8 @@ def main(argv: list[str] | None = None) -> int:
         "collect": cmd_collect,
         "probe": cmd_probe,
         "protect": cmd_protect,
+        "alert": cmd_alert,
+        "alert-test": cmd_alert_test,
         "recent": cmd_recent,
         "simulate": cmd_simulate,
         "status": cmd_status,

@@ -57,6 +57,12 @@ class Config:
     #: point estimate. Network uncertainty is often 2-6 km.
     use_uncertainty_margin: bool = True
 
+    # -- alerting (``blitzen alert``) ------------------------------------------
+
+    #: Announce that the feed is blind once it has been down this long. Shorter
+    #: than this is ordinary network noise; longer and a storm can arrive unseen.
+    blind_alert_minutes: float = 10.0
+
     @property
     def trigger_distance_km(self) -> float:
         return self.trigger_distance_miles * 1.609344
@@ -112,6 +118,8 @@ class Config:
             raise ValueError(f"all_clear_minutes must be positive: {self.all_clear_minutes}")
         if self.stale_feed_seconds <= 0:
             raise ValueError(f"stale_feed_seconds must be positive: {self.stale_feed_seconds}")
+        if self.blind_alert_minutes <= 0:
+            raise ValueError(f"blind_alert_minutes must be positive: {self.blind_alert_minutes}")
         # A trigger radius outside the collection radius would silently never
         # fire: strokes beyond radius_km are discarded before it is consulted.
         if self.trigger_distance_km > self.radius_km:

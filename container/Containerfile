@@ -1,0 +1,36 @@
+# blitzen — lightning alerts for the house, a sidecar in the `signal`
+# container's network namespace on `pods`. It reaches the Signal gateway on
+# 127.0.0.1:8085 and needs no address of its own. Deployed by skynet's
+# ansible/containers.yml from ansible/vars/podman_services.yml.
+#
+# Debian-based (python:3.13-slim) so the sentry agent's package checks work.
+FROM docker.io/library/python:3.13-slim
+
+# tzdata so message times read as local time, not UTC.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY blitzen/ ./blitzen/
+COPY bin/blitzen ./bin/blitzen
+# The site to watch. Supplied by the deployment, NOT kept in this repo: it is
+# a home address and this repo is public. skynet stages it from
+# ansible/files/pods/blitzen/config.json.
+COPY config.json ./config.json
+COPY sentry-agent /usr/local/bin/sentry-agent
+
+# /data is created here, owned by the service uid, so podman copies that
+# ownership into the empty named volume on first mount. Without it the volume
+# is root-owned and SQLite fails to open the database.
+RUN useradd --system --uid 1509 --home-dir /app --shell /usr/sbin/nologin blitzen \
+    && mkdir -p /data \
+    && chown -R 1509:1509 /app /data \
+    && chmod 0755 /app/bin/blitzen
+USER 1509
+ENV HOME=/app TZ=America/Denver PYTHONUNBUFFERED=1
+ENTRYPOINT ["python3", "/app/bin/blitzen", "--config", "/app/config.json"]
+CMD ["alert"]

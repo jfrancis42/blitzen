@@ -495,3 +495,154 @@ def test_collector_tick_survives_consumer_exception(tmp_path):
         collector = Collector(config, store=store, source=QuietSource(), on_tick=boom)
         reports = collector.run(max_intervals=1)
     assert reports[0].polls >= 1, "collection must continue despite a bad consumer"
+
+
+# -- Signal alerting (notify.py) ---------------------------------------------
+
+from blitzen.notify import LightningAlerter, SignalSender  # noqa: E402
+
+
+def _alerter(**overrides):
+    controller, _equipment, clock = _controller(**overrides)
+    sent = []
+    alerter = LightningAlerter(controller, sent.append)
+    controller.start()
+    alerter.on_tick(clock.now, clock.now)
+    return alerter, controller, clock, sent
+
+
+def test_alert_once_per_storm_then_all_clear():
+    alerter, controller, clock, sent = _alerter()
+    assert sent == [], "startup must be silent"
+
+    alerter.on_stroke(_nearby(6, clock.now))
+    for _ in range(5):
+        clock.advance_minutes(1)
+        alerter.on_stroke(_nearby(4, clock.now))
+        alerter.on_tick(clock.now, clock.now)
+    assert len(sent) == 1, "one message per storm, not one per strike"
+    assert sent[0].startswith("⚡ LIGHTNING 6.0 mi")
+
+    clock.advance_minutes(29)
+    alerter.on_tick(clock.now, clock.now)
+    assert len(sent) == 1, "all-clear must wait the full 30 quiet minutes"
+    clock.advance_minutes(1.1)
+    alerter.on_tick(clock.now, clock.now)
+    assert len(sent) == 2 and sent[1].startswith("✅ All clear")
+    assert "closest 4.0 mi" in sent[1] and "6 strike(s)" in sent[1]
+
+    clock.advance_minutes(5)
+    alerter.on_stroke(_nearby(3, clock.now))
+    assert len(sent) == 3 and "LIGHTNING" in sent[2], "a new storm alerts again"
+
+
+def test_strike_outside_trigger_sends_nothing():
+    alerter, _controller_, clock, sent = _alerter()
+    alerter.on_stroke(_nearby(14, clock.now))
+    alerter.on_tick(clock.now, clock.now)
+    assert sent == []
+
+
+def test_alert_fires_even_when_power_already_held_off():
+    """A strike during a feed outage moves state without a power_off call.
+
+    This is the reason the alerter watches state rather than Equipment.
+    """
+    alerter, controller, clock, sent = _alerter()
+    last_good = clock.now
+    clock.advance_minutes(3)
+    alerter.on_tick(clock.now, last_good)          # stale -> power held off
+    assert controller.stale
+    alerter.on_stroke(_nearby(5, clock.now))
+    assert any("LIGHTNING" in m for m in sent)
+
+
+def test_blind_feed_is_announced_and_recovery_reported():
+    alerter, _controller_, clock, sent = _alerter(blind_alert_minutes=10)
+    last_good = clock.now
+    clock.advance_minutes(5)
+    alerter.on_tick(clock.now, last_good)
+    assert sent == [], "a short outage is noise, not news"
+    clock.advance_minutes(6)
+    alerter.on_tick(clock.now, last_good)
+    clock.advance_minutes(1)
+    alerter.on_tick(clock.now, last_good)
+    assert len(sent) == 1 and "BLIND" in sent[0]
+
+    clock.advance_minutes(1)
+    alerter.on_tick(clock.now, clock.now)
+    assert len(sent) == 2 and "back" in sent[1]
+
+
+def test_short_outage_sends_no_recovery_message():
+    alerter, _controller_, clock, sent = _alerter(blind_alert_minutes=10)
+    last_good = clock.now
+    clock.advance_minutes(4)
+    alerter.on_tick(clock.now, last_good)
+    alerter.on_tick(clock.now, clock.now)
+    assert sent == []
+
+
+def test_all_clear_while_blind_says_so():
+    alerter, _controller_, clock, sent = _alerter(blind_alert_minutes=60)
+    alerter.on_stroke(_nearby(5, clock.now))
+    last_good = clock.now
+    clock.advance_minutes(31)
+    alerter.on_tick(clock.now, last_good)
+    assert "All clear" in sent[-1] and "DOWN" in sent[-1]
+
+
+def test_restart_mid_storm_is_silent_but_still_clears(tmp_path):
+    clock = FakeClock()
+    with Store(tmp_path / "s.db") as store:
+        nearby = _nearby(5, clock.now)
+        store.add_strokes([Store.row_for(nearby.stroke, nearby.distance_km, 0.0)])
+        clock.advance_minutes(2)
+
+        c2, _e2, _c2 = _controller(clock=clock, store=store)
+        sent = []
+        alerter = LightningAlerter(c2, sent.append)
+        c2.start()
+        assert c2.state is State.DANGER
+        alerter.on_tick(clock.now, clock.now)
+        alerter.on_stroke(_nearby(4, clock.now))
+        assert sent == [], "the storm was already announced before the restart"
+        clock.advance_minutes(31)
+        alerter.on_tick(clock.now, clock.now)
+        assert len(sent) == 1 and "All clear" in sent[0]
+
+
+class _Resp:
+    def __init__(self, code):
+        self.status_code = code
+        self.text = ""
+
+
+def test_sender_retries_then_delivers():
+    codes = [503, 503, 200]
+    calls = []
+
+    def post(url, json, headers, timeout):
+        calls.append((url, json, headers))
+        return _Resp(codes.pop(0))
+
+    sender = SignalSender("http://gw:8085/", "tok", ["+1555"], retry_delays=(0.01, 0.01), post=post)
+    sender.send("hello")
+    sender.close()
+    assert sender.delivered == 1 and len(calls) == 3
+    assert calls[0][0] == "http://gw:8085/send"
+    assert calls[0][1] == {"to": ["+1555"], "message": "hello"}
+    assert calls[0][2]["Authorization"] == "Bearer tok"
+
+
+def test_sender_does_not_retry_an_auth_refusal():
+    calls = []
+
+    def post(*_a, **_k):
+        calls.append(1)
+        return _Resp(401)
+
+    sender = SignalSender("http://gw", "bad", ["+1555"], retry_delays=(0.01,) * 5, post=post)
+    sender.send("x")
+    sender.close()
+    assert sender.failed == 1 and len(calls) == 1
