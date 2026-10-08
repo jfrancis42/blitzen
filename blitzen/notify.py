@@ -54,7 +54,10 @@ RETRY_DELAYS_S = (5, 15, 30, 60, 120, 300, 600)
 
 
 class SignalSender:
-    """Posts messages to signal-cli-api's ``/send``, retrying in the background."""
+    """Posts alerts, retrying in the background. Since 2026-10-07 through the
+    UNIFIED comms API (comms-api, ``/send`` with ``via``) when COMMS_URL is
+    set; otherwise the old direct path to signal-cli-api (BLITZEN_SIGNAL_*),
+    kept so a rollback is removing one variable."""
 
     def __init__(
         self,
@@ -63,6 +66,7 @@ class SignalSender:
         recipients: list[str],
         retry_delays: tuple[float, ...] = RETRY_DELAYS_S,
         post: Callable[..., requests.Response] = requests.post,
+        via: list[str] | None = None,
     ) -> None:
         if not recipients:
             raise ValueError("no Signal recipients configured")
@@ -70,6 +74,7 @@ class SignalSender:
         self.token = token
         self.recipients = recipients
         self.retry_delays = retry_delays
+        self.via = via
         self._post = post
         self.delivered = 0
         self.failed = 0
@@ -84,6 +89,17 @@ class SignalSender:
         Deployment settings, not lightning settings, so they are kept out of
         config.json: the same config runs on a laptop with no gateway at all.
         """
+        if os.environ.get("COMMS_URL", "").strip():
+            token = os.environ.get("COMMS_TOKEN", "").strip()
+            if not token:
+                token_file = os.environ.get("COMMS_TOKEN_FILE")
+                if not token_file:
+                    raise ValueError("set COMMS_TOKEN or COMMS_TOKEN_FILE")
+                token = Path(token_file).read_text(encoding="utf-8").strip()
+            split = lambda v: [r.strip() for r in v.split(",") if r.strip()]  # noqa: E731
+            return cls(os.environ["COMMS_URL"], token,
+                       split(os.environ.get("COMMS_TO", "jeff")),
+                       via=split(os.environ.get("COMMS_VIA", "signal")))
         url = os.environ.get("BLITZEN_SIGNAL_URL", "http://127.0.0.1:8085")
         token = os.environ.get("BLITZEN_SIGNAL_TOKEN", "").strip()
         if not token:
@@ -123,11 +139,14 @@ class SignalSender:
             if delay:
                 time.sleep(delay)
             try:
+                body = {"to": self.recipients, "message": text}
+                if self.via is not None:
+                    body["via"] = self.via
                 resp = self._post(
                     self.url,
-                    json={"to": self.recipients, "message": text},
+                    json=body,
                     headers={"Authorization": f"Bearer {self.token}"},
-                    timeout=60,
+                    timeout=200,
                 )
                 if resp.status_code < 400:
                     print(f"  signal: sent ({len(text)} chars)", flush=True)

@@ -646,3 +646,23 @@ def test_sender_does_not_retry_an_auth_refusal():
     sender.send("x")
     sender.close()
     assert sender.failed == 1 and len(calls) == 1
+
+
+def test_comms_path_sends_via(monkeypatch):
+    from blitzen.notify import SignalSender
+
+    class R:
+        status_code = 200
+        text = ""
+
+    monkeypatch.setenv("COMMS_URL", "http://comms:8080")
+    monkeypatch.setenv("COMMS_TOKEN", "abc")
+    monkeypatch.setenv("COMMS_VIA", "signal,telegram")
+    monkeypatch.delenv("COMMS_TO", raising=False)
+    s = SignalSender.from_env()
+    sent = []
+    s._post = lambda url, json, headers, timeout: sent.append((url, json)) or R()
+    assert s._deliver("strike")
+    assert sent == [("http://comms:8080/send",
+                     {"to": ["jeff"], "message": "strike", "via": ["signal", "telegram"]})]
+    s.close(1)
