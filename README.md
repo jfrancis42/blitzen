@@ -52,7 +52,7 @@ bin/blitzen collect --live
 # What is the feed delivering right now? Writes nothing to the database.
 bin/blitzen probe --seconds 20
 
-# Signal alert on nearby lightning (needs BLITZEN_SIGNAL_* env, see CLAUDE.md)
+# Signal alert on nearby lightning (needs COMMS_* or BLITZEN_SIGNAL_* env, see blitzen/notify.py)
 bin/blitzen alert
 bin/blitzen alert-test        # send one sample of each message
 
